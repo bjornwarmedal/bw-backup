@@ -1,0 +1,153 @@
+#!/bin/bash
+
+findconfig(){ # args: DIR_PATH
+	if [ -e "${1}/${CONFIGFILENAME}" ];then
+		echo "${1}/${CONFIGFILENAME}"
+		return 0
+	else
+		if [ "${1}" == "/" ]; then
+			return 1
+		fi
+		findconfig $(dirname "${1}")
+	fi
+}
+
+verifyremote(){ # args: USER@HOST:PATH
+	local REMOTE="${1}"
+	local REMOTEHOST="${REMOTE%:*}"
+	local REMOTEDIR="${REMOTE#*:}"
+	ssh "${REMOTEHOST}" "mkdir -p ${REMOTEDIR}" || return $?
+	echo "Remote location verified/created."
+}
+
+init(){ # args: USER@HOST:PATH
+	if [ -n "${1}" ]; then
+		verifyremote "${1}" || return $?
+		local REMOTE="${1}"
+	else
+		local REMOTE="user@host:path"
+
+	fi
+	echo "REMOTE=\"${REMOTE}\"" > "${CONFIGFILENAME}"
+
+	echo "File ${PWD}/${CONFIGFILENAME} created. Please verify settings."
+}
+
+push(){ # args: backupdir [extra args]
+	rsync --verbose --archive --delete-after --exclude=${CONFIGFILENAME} ${2} "${1}/" "${REMOTE}" || return $?
+}
+
+pull(){ # args: backupdir [extra args]
+	rsync --verbose --archive --delete-after --exclude=${CONFIGFILENAME} ${2} "${REMOTE}/" "${1}" || return $?
+}
+
+pushonce(){ # args: USER@HOST:PATH
+	if [ -n "${1}" ]; then
+		rsync --verbose --archive --exclude=${CONFIGFILENAME} ./ "${1}/" || return $?
+	else
+		echo "Missing arg: user@host:path"
+		return 1
+	fi
+}
+
+repostatus(){ # args: backupdir
+	# Find the time of latest local change
+	local LASTLOCALCHANGE=$(find "${1}"/* | grep -v "${CONFIGFILENAME}" | xargs ls -dl --time-style=+%s 2> /dev/null | awk '{print $6}' | sort -r | head -n 1)
+	echo "Last local change:  $(date -d @${LASTLOCALCHANGE} +%Y%m%d.%H:%M:%S/%s)"
+
+	# Find the time of latest remote change
+	local LASTREMOTECHANGE=$(ssh "${REMOTE%:*}" "find \"${REMOTE#*:}\"/* | grep -v \"${CONFIGFILENAME}\" | xargs ls -dl --time-style=+%s 2> /dev/null | awk '{print \$6}' | sort -r | head -n 1")
+	echo "Last remote change: $(date -d @${LASTREMOTECHANGE} +%Y%m%d.%H:%M:%S/%s)"
+	echo ""
+
+	if [ "${LASTREMOTECHANGE}" -eq "${LASTLOCALCHANGE}" ]; then
+		echo "Local and remote repos are in sync."
+	elif [ "${LASTREMOTECHANGE}" -gt "${LASTLOCALCHANGE}" ]; then
+		echo "You have unpulled changes:"
+		pull "${1}" --dry-run
+	elif [ "${LASTREMOTECHANGE}" -lt "${LASTLOCALCHANGE}" ]; then
+		echo "You have unpushed changes:"
+		push "${1}" --dry-run
+	fi
+	return $?
+}
+
+info(){
+	echo "
+LOCAL:  ${1}
+REMOTE: ${REMOTE}"
+
+	repostatus ${1} || return $?
+}
+
+usage(){
+echo "
+Usage: $0 push|pull|info|help
+       $0 init|pushonce [remote-user@remote-host:remote-path]
+
+       The program $0 will push/pull data to/from remote site
+       according to configured settings.
+
+       OPTIONS:
+       push
+             Runs rsync to preset remote destination.
+       pull
+             Runs rsync from preset remote destination.
+       info
+             Prints settings for the current repository.
+       help
+             Prints this text and exits.
+       init [remote-user@remote-host:remote-path]
+             Initiates a new repository in the current
+             working directory, verifying that the remote
+             destination exists - and creating it if needed.
+       pushonce [remote-user@remote-host:remote-path]
+             Does not set up a repository, or even check if
+             one already exists. Instead only does one push. 
+	     Notably this command does NOT use the --delete
+	     flag to rsync, and will thereby never erase data
+	     in the remote destination (though it may override
+	     with local files of the same name).
+"
+}
+
+########
+# MAIN #
+########
+
+CONFIGFILENAME=".backupconf"
+
+case ${1} in
+	init)
+		if [ -e "${CONFIGFILENAME}" ]; then
+			echo 'This directory is already a backup repo!'
+			exit 1
+		else
+			init ${2}
+			exit $?
+		fi
+		;;
+	push|pull|info)
+		if BACKUPCONFIG=$(findconfig ${PWD}); then
+			# Source settings file; all variables herein will be global
+			source ${BACKUPCONFIG};
+			# Run push/pull/info giving the root dir of the repo as argument
+			${1} $(dirname ${BACKUPCONFIG})
+			exit $?
+		else
+			echo "Not inside backup repo."
+			exit 1
+		fi
+		;;
+	pushonce)
+		${1} ${2}
+		;;
+	help)
+		usage
+		;;
+	*)
+		usage
+		exit 1
+		;;
+esac
+
