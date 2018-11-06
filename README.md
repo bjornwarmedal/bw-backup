@@ -4,6 +4,7 @@ A simple wrapper around rsync for easily doing or restoring small backups
 The program has only one setting, defining the remote mirror of your repo. This setting is placed in a file called .backupconf, which in turn is placed at the root of the file tree you wish to backup.
 
 Usage:
+
        bw-backup push|pull|info|help
        bw-backup init|pushonce [remote-user@remote-host:remote-path]
 
